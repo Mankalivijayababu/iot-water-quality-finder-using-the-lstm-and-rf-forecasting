@@ -6,14 +6,14 @@ import math
 import os
 import time
 import json
-from tensorflow.keras.models import load_model
 import joblib
+from tensorflow.keras.models import load_model
 import tensorflow as tf
 
 app = Flask(__name__)
 
 # ============================================================
-# ✅ CLEAN FUNCTION
+# HELPERS
 # ============================================================
 def clean(value):
     try:
@@ -21,32 +21,35 @@ def clean(value):
             return 0
         if isinstance(value, float) and math.isnan(value):
             return 0
-        return value
+        return float(value)
     except:
         return 0
 
 
 # ============================================================
-# ✅ LOAD ML MODELS
+# LOAD MODELS
 # ============================================================
-with open("water_quality_model.pkl", "rb") as f:
+print("Loading RandomForest model...")
+with open("rf_model.pkl", "rb") as f:
     classifier_model = pickle.load(f)
 
+print("Loading LabelEncoder...")
 with open("label_encoder.pkl", "rb") as f:
     label_encoder = pickle.load(f)
 
+print("Loading LSTM model + scaler...")
 lstm_model = load_model("lstm_model.h5")
 lstm_scaler = joblib.load("scaler.pkl")
 
+# Load full dataset for LSTM windowing
+df = pd.read_csv("water_quality_big_dataset.csv", parse_dates=["Date"]).sort_values("Date")
+df = df.reset_index(drop=True)
+
+print("Backend Ready!")
+
 
 # ============================================================
-# ✅ LOAD DATASET (FOR LSTM HISTORY ONLY)
-# ============================================================
-df = pd.read_csv("water_quality_dataset.csv").replace({np.nan: 0})
-
-
-# ============================================================
-# ✅ AI PREDICT (CLASSIFICATION)
+# 1️⃣ RF CLASSIFICATION
 # ============================================================
 @app.route("/predict", methods=["POST"])
 def predict():
@@ -56,7 +59,6 @@ def predict():
         turb = clean(data.get("Turbidity"))
 
         X = pd.DataFrame([[tds, turb]], columns=["TDS", "Turbidity"])
-
         pred_class = classifier_model.predict(X)[0]
         pred_label = label_encoder.inverse_transform([pred_class])[0]
 
@@ -66,33 +68,30 @@ def predict():
         return jsonify({
             "prediction": pred_label,
             "confidence": confidence
-        }), 200
+        })
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 # ============================================================
-# ✅ LSTM FUTURE PREDICTION
+# 2️⃣ LSTM FUTURE FORECAST (TDS + Turbidity)
 # ============================================================
 @app.route("/predict_future", methods=["POST"])
 def predict_future():
     try:
         data = request.get_json()
-        steps = int(data.get("steps", 5))
+        steps = int(data.get("steps", 7))
 
-        tf.config.run_functions_eagerly(False)
-
-        # last 3 rows
-        window = 3
+        window = 14
         recent = df[["TDS", "Turbidity"]].tail(window).values
         scaled = lstm_scaler.transform(recent)
-
         input_seq = np.array([scaled])
+
         predictions = []
 
         for _ in range(steps):
-            scaled_pred = lstm_model(input_seq, training=False).numpy()[0]
+            scaled_pred = lstm_model.predict(input_seq, verbose=0)[0]
             real = lstm_scaler.inverse_transform([scaled_pred])[0]
 
             predictions.append({
@@ -109,7 +108,50 @@ def predict_future():
 
 
 # ============================================================
-# ✅ IOT UPDATE — ESP32 real sensor values
+# 3️⃣ LSTM + WHO QUALITY FORECAST
+# ============================================================
+@app.route("/predict_future_quality", methods=["POST"])
+def predict_future_quality():
+    try:
+        data = request.get_json()
+        steps = int(data.get("steps", 7))
+
+        window = 14
+        recent = df[["TDS", "Turbidity"]].tail(window).values
+        scaled = lstm_scaler.transform(recent)
+        input_seq = np.array([scaled])
+
+        results = []
+
+        for _ in range(steps):
+            scaled_pred = lstm_model.predict(input_seq, verbose=0)[0]
+            real = lstm_scaler.inverse_transform([scaled_pred])[0]
+
+            tds, turb = float(real[0]), float(real[1])
+
+            if tds < 500:
+                q = "Safe"
+            elif tds < 1000:
+                q = "Moderate"
+            else:
+                q = "Unsafe"
+
+            results.append({
+                "TDS": tds,
+                "Turbidity": turb,
+                "Quality": q
+            })
+
+            input_seq = np.array([np.vstack([input_seq[0][1:], scaled_pred])])
+
+        return jsonify({"forecast": results})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================================
+# 4️⃣ IOT ESP32 → BACKEND UPDATE
 # ============================================================
 @app.route("/iot_update", methods=["POST"])
 def iot_update():
@@ -119,67 +161,74 @@ def iot_update():
         row = {
             "TDS": clean(data.get("tds")),
             "Turbidity": clean(data.get("turbidity")),
-            "Safe": data.get("safe", False),
+            "Safe": bool(data.get("safe", False)),
             "Timestamp": int(data.get("ts", time.time()))
         }
 
-        # Save latest
-        with open("latest_iot.json", "w") as f:
-            json.dump(row, f)
+        json.dump(row, open("latest_iot.json", "w"))
 
-        # Save to history
-        if not os.path.exists("iot_history.json"):
-            with open("iot_history.json", "w") as f:
-                json.dump([], f)
-
-        with open("iot_history.json", "r") as f:
-            hist = json.load(f)
+        hist = []
+        if os.path.exists("iot_history.json"):
+            hist = json.load(open("iot_history.json"))
 
         hist.append(row)
+        json.dump(hist, open("iot_history.json", "w"))
 
-        with open("iot_history.json", "w") as f:
-            json.dump(hist, f)
-
-        return jsonify({"msg": "IoT data received OK"}), 200
+        return jsonify({"msg": "IoT data saved"})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 # ============================================================
-# ✅ IOT LATEST
+# 5️⃣ GET LATEST SENSOR VALUE
 # ============================================================
 @app.route("/iot_latest", methods=["GET"])
 def iot_latest():
     try:
         if not os.path.exists("latest_iot.json"):
-            return jsonify({"error": "No IoT data yet"}), 404
+            return jsonify({"tds": 0, "turbidity": 0, "safe": True}), 200
 
-        with open("latest_iot.json", "r") as f:
-            return jsonify(json.load(f)), 200
+        raw = json.load(open("latest_iot.json"))
+
+        return jsonify({
+            "tds": float(raw["TDS"]),
+            "turbidity": float(raw["Turbidity"]),
+            "safe": bool(raw["Safe"]),
+            "ts": int(raw["Timestamp"])
+        })
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 # ============================================================
-# ✅ IOT HISTORY
+# 6️⃣ FULL HISTORY
 # ============================================================
 @app.route("/iot_history", methods=["GET"])
 def iot_history():
     try:
         if not os.path.exists("iot_history.json"):
-            return jsonify([]), 200
+            return jsonify([])
 
-        with open("iot_history.json", "r") as f:
-            return jsonify(json.load(f)), 200
+        hist = json.load(open("iot_history.json"))
+        hist.reverse()
+        return jsonify(hist)
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 # ============================================================
-# ✅ START SERVER
+# 7️⃣ HEALTHCHECK FOR RENDER
+# ============================================================
+@app.route("/healthcheck", methods=["GET"])
+def healthcheck():
+    return jsonify({"status": "OK"}), 200
+
+
+# ============================================================
+# RUN SERVER
 # ============================================================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000)
