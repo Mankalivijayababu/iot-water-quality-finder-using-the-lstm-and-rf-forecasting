@@ -1,42 +1,45 @@
-# ----------------------------------------------------
-# 1. BASE IMAGE
-# ----------------------------------------------------
+# Use Python 3.10 Slim
 FROM python:3.10-slim
 
-# ----------------------------------------------------
-# 2. Install system dependencies (compatible with TF)
-# ----------------------------------------------------
+# -------------------------------
+# Install required system packages
+# -------------------------------
 RUN apt-get update && apt-get install -y \
     build-essential \
     libhdf5-dev \
     liblapack-dev \
     libblas-dev \
     gfortran \
+    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# ----------------------------------------------------
-# 3. Set working directory
-# ----------------------------------------------------
+# -------------------------------
+# Set working directory
+# -------------------------------
 WORKDIR /app
 
-# ----------------------------------------------------
-# 4. Copy backend files
-# ----------------------------------------------------
+# -------------------------------
+# Copy requirements and install
+# -------------------------------
+COPY requirements.txt .
+
+RUN pip install --upgrade pip setuptools wheel
+
+# TensorFlow 2.10.0 (works on CPU x86)
+RUN pip install tensorflow==2.10.0
+
+# Install other Python packages
+RUN pip install -r requirements.txt
+
+# -------------------------------
+# Copy backend source code
+# -------------------------------
 COPY . .
 
-# ----------------------------------------------------
-# 5. Install Python requirements
-# ----------------------------------------------------
-RUN pip install --upgrade pip
-RUN pip install --no-cache-dir -r requirements.txt
-
-# ----------------------------------------------------
-# 6. Expose the Render port
-# ----------------------------------------------------
+# -------------------------------
+# Expose Render port
+# -------------------------------
 ENV PORT=10000
-EXPOSE 10000
 
-# ----------------------------------------------------
-# 7. Start the server using Gunicorn
-# ----------------------------------------------------
-CMD ["gunicorn", "--bind", "0.0.0.0:10000", "app:app"]
+# Start server
+CMD gunicorn --bind 0.0.0.0:$PORT app:app
