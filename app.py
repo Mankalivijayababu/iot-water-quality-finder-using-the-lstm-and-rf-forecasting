@@ -3,30 +3,39 @@ from flask_cors import CORS
 import pickle
 import pandas as pd
 import numpy as np
-import math
 import os
-import time
-import json
 import joblib
 from tensorflow.keras.models import load_model
 
 app = Flask(__name__)
-CORS(app)  # allow frontend calls
+CORS(app)   # allow frontend requests
+
+
+# ============================================================
+# LOAD MODELS
+# ============================================================
+print("🔄 Loading Random Forest model...")
+with open("rf_model.pkl", "rb") as f:
+    rf_model = pickle.load(f)
+
+print("🔄 Loading Label Encoder...")
+with open("label_encoder.pkl", "rb") as f:
+    label_encoder = pickle.load(f)
+
+print("🔄 Loading LSTM model (.keras)...")
+lstm_model = load_model("lstm_model.keras")
+
+print("🔄 Loading LSTM scaler...")
+lstm_scaler = joblib.load("scaler.pkl")
+
+# Load dataset (needed for last 14 days)
+df = pd.read_csv("water_quality_big_dataset.csv", parse_dates=["Date"])
+df = df.sort_values("Date").reset_index(drop=True)
+
 
 # ============================================================
 # HELPERS
 # ============================================================
-def clean(value):
-    try:
-        if value is None:
-            return 0
-        if isinstance(value, float) and math.isnan(value):
-            return 0
-        return float(value)
-    except:
-        return 0
-
-
 def get_float(data, *keys, default=0.0):
     for key in keys:
         if key in data:
@@ -38,47 +47,26 @@ def get_float(data, *keys, default=0.0):
 
 
 # ============================================================
-# LOAD MODELS
-# ============================================================
-print("Loading RandomForest model...")
-with open("rf_model.pkl", "rb") as f:
-    classifier_model = pickle.load(f)
-
-print("Loading LabelEncoder...")
-with open("label_encoder.pkl", "rb") as f:
-    label_encoder = pickle.load(f)
-
-print("Loading LSTM model...")
-lstm_model = load_model("lstm_model.h5")
-lstm_scaler = joblib.load("scaler.pkl")
-
-df = pd.read_csv("water_quality_big_dataset.csv", parse_dates=["Date"]).sort_values("Date")
-df = df.reset_index(drop=True)
-
-print("Backend Ready!")
-
-
-# ============================================================
-# 1) Random Forest
+# 1) RANDOM FOREST PREDICTION
 # ============================================================
 @app.route("/predict", methods=["POST"])
-def predict():
+def predict_quality():
     try:
         data = request.get_json()
 
-        tds = get_float(data, "TDS", "tds", default=0.0)
-        turb = get_float(data, "Turbidity", "turbidity", default=0.0)
+        tds = get_float(data, "TDS", "tds", default=0)
+        turb = get_float(data, "Turbidity", "turbidity", default=0)
 
         X = pd.DataFrame([[tds, turb]], columns=["TDS", "Turbidity"])
-        pred_class = classifier_model.predict(X)[0]
+
+        pred_class = rf_model.predict(X)[0]
         pred_label = label_encoder.inverse_transform([pred_class])[0]
 
-        probabilities = classifier_model.predict_proba(X)[0]
-        confidence = round(float(max(probabilities)) * 100, 2)
+        confidence = float(max(rf_model.predict_proba(X)[0]) * 100)
 
         return jsonify({
             "prediction": pred_label,
-            "confidence": confidence
+            "confidence": round(confidence, 2)
         })
 
     except Exception as e:
@@ -86,21 +74,18 @@ def predict():
 
 
 # ============================================================
-# 2) LSTM FUTURE FORECAST (TDS + Turbidity)
+# 2) LSTM FUTURE VALUES (TDS + TURBIDITY)
 # ============================================================
-@app.route("/predict_future", methods=["POST", "GET"])
+@app.route("/predict_future", methods=["POST"])
 def predict_future():
     try:
-        if request.method == "POST":
-            data = request.get_json()
-            steps = int(data.get("steps", 7))
-        else:
-            steps = int(request.args.get("steps", 7))
+        data = request.get_json()
+        steps = int(data.get("steps", 7))
 
         window = 14
         recent = df[["TDS", "Turbidity"]].tail(window).values
-        scaled = lstm_scaler.transform(recent)
-        seq = np.array([scaled])
+        scaled_recent = lstm_scaler.transform(recent)
+        seq = np.array([scaled_recent])
 
         predictions = []
 
@@ -122,7 +107,7 @@ def predict_future():
 
 
 # ============================================================
-# 3) LSTM QUALITY FORECAST
+# 3) LSTM QUALITY FORECAST (Safe / Moderate / Unsafe)
 # ============================================================
 @app.route("/predict_future_quality", methods=["POST"])
 def predict_future_quality():
@@ -132,8 +117,8 @@ def predict_future_quality():
 
         window = 14
         recent = df[["TDS", "Turbidity"]].tail(window).values
-        scaled = lstm_scaler.transform(recent)
-        seq = np.array([scaled])
+        scaled_recent = lstm_scaler.transform(recent)
+        seq = np.array([scaled_recent])
 
         results = []
 
@@ -144,6 +129,7 @@ def predict_future_quality():
             tds = float(real[0])
             turb = float(real[1])
 
+            # Simple rule-based quality
             if tds < 500:
                 q = "Safe"
             elif tds < 1000:
@@ -166,7 +152,7 @@ def predict_future_quality():
 
 
 # ============================================================
-# Healthcheck
+# HEALTHCHECK
 # ============================================================
 @app.route("/healthcheck")
 def healthcheck():
@@ -174,8 +160,8 @@ def healthcheck():
 
 
 # ============================================================
-# Run
+# RUN SERVER
 # ============================================================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host="0.0.0.0", port=port)
