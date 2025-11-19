@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+env/
+*.pyc
+__pycache__/
+
+
+# Machine learning models (Render doesn’t allow)
+*.h5
+*.pkl
+*.joblib
+
+# Dataset files
+*.csv
+
+# TensorFlow binaries
+*.dll
+*.lib
+*.so
+*.dylib
+
+# VS Code
+.vscode/
