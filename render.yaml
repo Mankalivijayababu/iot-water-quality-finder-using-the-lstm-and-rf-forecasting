@@ -1,8 +1,8 @@
-# render.yaml
 services:
-  - type: web
-    name: water-quality-backend
-    runtime: python
+  - name: water-quality-backend
+    type: web
+    env: python
+    runtime: python3
     pythonVersion: 3.10.12
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn app:app"
