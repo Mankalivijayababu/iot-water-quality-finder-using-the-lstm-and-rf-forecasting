@@ -1,9 +1,7 @@
-
-flask
-flask-cors
-numpy
-tensorflow-cpu==2.14.0
-joblib
-scikit-learn
+Flask
 gunicorn
-
+tensorflow-cpu
+scikit-learn
+pandas
+numpy
+joblib

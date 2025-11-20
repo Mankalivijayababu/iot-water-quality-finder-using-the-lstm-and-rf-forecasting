@@ -1,8 +1,10 @@
 services:
   - type: web
-    name: water-prediction
+    name: iot-water-quality-finder
     env: python
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app
-    plan: free
-    autoDeploy: true
+    runtime: python3
+    envVars:
+      PYTHON_VERSION: 3.10.4
