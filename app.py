@@ -9,6 +9,25 @@ app = Flask(__name__)
 CORS(app)
 
 # -------------------------------------------------------
+# Root Route (Homepage)
+# -------------------------------------------------------
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({
+        "status": "running",
+        "message": "Water Quality API (RF + LSTM) is live 🚀",
+        "routes": {
+            "/predict": "POST → Predict water quality using Random Forest",
+            "/predict_future_quality": "POST → Predict future water quality using LSTM",
+            "/iot_latest": "GET → Latest IoT reading",
+            "/iot_history": "GET → IoT history",
+            "/add_history": "POST → Add history entry",
+            "/search_history": "GET → Search history by city"
+        }
+    })
+
+
+# -------------------------------------------------------
 # Load ML Models
 # -------------------------------------------------------
 print("🔄 Loading Random Forest model...")
@@ -118,7 +137,7 @@ def get_history():
 
 
 # -------------------------------------------------------
-# 5️⃣ Save History (Flutter Dashboard "Save to History")
+# 5️⃣ Save History Entry
 # -------------------------------------------------------
 @app.route("/add_history", methods=["POST"])
 def add_history():
