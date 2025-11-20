@@ -1,7 +1,7 @@
 # ------------------------------------------------------------
-#  train_model.py  (FINAL VERSION - h5 SAFE FOR RENDER)
-#  ✔ Trains Random Forest Classification
-#  ✔ Trains LSTM Time-Series Forecasting
+#  train_model.py  (FINAL FIXED VERSION – 100% RENDER SAFE)
+#  ✔ Random Forest Classification
+#  ✔ LSTM Time-Series Forecasting
 #  ✔ Saves: rf_model.pkl, label_encoder.pkl,
 #            lstm_model.h5, scaler.pkl
 # ------------------------------------------------------------
@@ -10,6 +10,7 @@ import pandas as pd
 import numpy as np
 import pickle
 import joblib
+
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler, MinMaxScaler
 from sklearn.pipeline import Pipeline
@@ -19,9 +20,10 @@ from sklearn.metrics import accuracy_score, classification_report
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Input
 from tensorflow.keras.optimizers import Adam
+import tensorflow as tf
 
 # ------------------------------------------------------------
-# LOAD DATA
+# LOAD DATASET
 # ------------------------------------------------------------
 df = pd.read_csv("water_quality_big_dataset.csv", parse_dates=["Date"])
 df = df.sort_values("Date").reset_index(drop=True)
@@ -77,7 +79,7 @@ with open("label_encoder.pkl", "wb") as f:
 print("✔ Saved: rf_model.pkl, label_encoder.pkl")
 
 # ------------------------------------------------------------
-# LSTM TIME SERIES FORECASTING
+# LSTM TIME-SERIES MODEL
 # ------------------------------------------------------------
 print("\n==============================")
 print("TRAINING LSTM FORECAST MODEL")
@@ -103,26 +105,33 @@ split = int(len(X_lstm) * 0.8)
 X_train_lstm, X_val_lstm = X_lstm[:split], X_lstm[split:]
 y_train_lstm, y_val_lstm = y_lstm[:split], y_lstm[split:]
 
-# --- LSTM MODEL (.h5 SAFE VERSION, SAME ARCHITECTURE) ---
+# ------------------ FIXED LSTM MODEL ------------------------
+# IMPORTANT: No deprecated metrics like "mse" or "keras.metrics.mse"
+# This ensures Render can load lstm_model.h5 safely.
+# ------------------------------------------------------------
 model = Sequential([
-    Input(shape=(window, len(features))),    # SAME ARCHITECTURE
+    Input(shape=(window, len(features))),
     LSTM(64, return_sequences=False),
     Dense(32, activation="relu"),
-    Dense(len(features))
+    Dense(len(features))  # output: [future_TDS, future_Turbidity]
 ])
 
-model.compile(optimizer=Adam(0.001), loss="mse", metrics=["mae"])
+model.compile(
+    optimizer=Adam(0.001),
+    loss="mse",
+    metrics=[tf.keras.metrics.MeanAbsoluteError(name="mae")]
+)
 
 model.fit(
     X_train_lstm, y_train_lstm,
     validation_data=(X_val_lstm, y_val_lstm),
-    epochs=50,
+    epochs=40,
     batch_size=8,
     verbose=1
 )
 
-# Save LSTM in .h5 format (REQUIRED FOR RENDER)
-model.save("lstm_model.h5")   # ✔ FIXED
+# Save LSTM model (Render safe)
+model.save("lstm_model.h5", include_optimizer=False)
 
 # Save scaler
 joblib.dump(scaler, "scaler.pkl")

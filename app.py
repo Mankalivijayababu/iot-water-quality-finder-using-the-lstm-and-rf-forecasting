@@ -1,169 +1,168 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import pickle
-import pandas as pd
-import numpy as np
-import os
 import joblib
+import numpy as np
+import time
 from tensorflow.keras.models import load_model
 
 app = Flask(__name__)
 CORS(app)
 
-
-# ============================================================
-# LOAD MODELS
-# ============================================================
+# -------------------------------------------------------
+# Load ML Models
+# -------------------------------------------------------
 print("🔄 Loading Random Forest model...")
-with open("rf_model.pkl", "rb") as f:
-    rf_model = pickle.load(f)
+rf_model = joblib.load("rf_model.pkl")
 
 print("🔄 Loading Label Encoder...")
-with open("label_encoder.pkl", "rb") as f:
-    label_encoder = pickle.load(f)
+label_encoder = joblib.load("label_encoder.pkl")
 
 print("🔄 Loading LSTM model (.h5)...")
-lstm_model = load_model("lstm_model.h5")   # USING H5 FILE
+lstm_model = load_model("lstm_model.h5")
 
 print("🔄 Loading LSTM scaler...")
-lstm_scaler = joblib.load("scaler.pkl")
+scaler = joblib.load("scaler.pkl")
+
+# -------------------------------------------------------
+# Dummy IoT Data (In-memory)
+# -------------------------------------------------------
+iot_data = {
+    "latest": {
+        "timestamp": time.time(),
+        "tds": 500,
+        "turbidity": 3.0
+    },
+    "history": []
+}
 
 
-# Load dataset for last 14 days (needed for LSTM seq)
-df = pd.read_csv("water_quality_big_dataset.csv", parse_dates=["Date"])
-df = df.sort_values("Date").reset_index(drop=True)
-
-
-# ============================================================
-# HELPERS
-# ============================================================
-def get_float(data, *keys, default=0.0):
-    """Safely extract numbers from JSON."""
-    for key in keys:
-        if key in data:
-            try:
-                return float(data[key])
-            except:
-                pass
-    return float(default)
-
-
-# ============================================================
-# 1) RANDOM FOREST PREDICTION
-# ============================================================
+# -------------------------------------------------------
+# 1️⃣ Random Forest → Predict Quality
+# -------------------------------------------------------
 @app.route("/predict", methods=["POST"])
 def predict_quality():
     try:
         data = request.get_json()
+        tds = float(data["tds"])
+        turbidity = float(data["turbidity"])
 
-        tds = get_float(data, "TDS", "tds")
-        turb = get_float(data, "Turbidity", "turbidity")
+        prediction = rf_model.predict([[tds, turbidity]])[0]
+        label = label_encoder.inverse_transform([prediction])[0]
 
-        X = pd.DataFrame([[tds, turb]], columns=["TDS", "Turbidity"])
-
-        pred_class = rf_model.predict(X)[0]
-        pred_label = label_encoder.inverse_transform([pred_class])[0]
-
-        confidence = float(max(rf_model.predict_proba(X)[0]) * 100)
+        confidence = np.max(rf_model.predict_proba([[tds, turbidity]]) * 100)
 
         return jsonify({
-            "prediction": pred_label,
-            "confidence": round(confidence, 2)
+            "prediction": label,
+            "confidence": round(float(confidence), 2)
         })
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-# ============================================================
-# 2) LSTM FUTURE TDS + TURBIDITY VALUES
-# ============================================================
-@app.route("/predict_future", methods=["POST"])
-def predict_future():
-    try:
-        data = request.get_json()
-        steps = int(data.get("steps", 7))
-
-        window = 14
-        recent = df[["TDS", "Turbidity"]].tail(window).values
-        scaled_recent = lstm_scaler.transform(recent)
-        seq = np.array([scaled_recent])
-
-        predictions = []
-
-        for _ in range(steps):
-            pred_scaled = lstm_model.predict(seq, verbose=0)[0]
-            real = lstm_scaler.inverse_transform([pred_scaled])[0]
-
-            predictions.append({
-                "TDS": float(real[0]),
-                "Turbidity": float(real[1])
-            })
-
-            seq = np.array([np.vstack([seq[0][1:], pred_scaled])])
-
-        return jsonify({"future_predictions": predictions})
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-# ============================================================
-# 3) LSTM FUTURE QUALITY CLASSIFICATION
-# ============================================================
+# -------------------------------------------------------
+# 2️⃣ LSTM → Future Prediction
+# -------------------------------------------------------
 @app.route("/predict_future_quality", methods=["POST"])
 def predict_future_quality():
     try:
         data = request.get_json()
         steps = int(data.get("steps", 7))
 
-        window = 14
-        recent = df[["TDS", "Turbidity"]].tail(window).values
-        scaled_recent = lstm_scaler.transform(recent)
-        seq = np.array([scaled_recent])
+        last_known = np.array([[500, 3]], dtype=float)
+        scaled = scaler.transform(last_known).reshape(1, 1, 2)
 
-        results = []
+        future_predictions = []
 
         for _ in range(steps):
-            pred_scaled = lstm_model.predict(seq, verbose=0)[0]
-            real = lstm_scaler.inverse_transform([pred_scaled])[0]
+            pred = lstm_model.predict(scaled)[0]
+            inv = scaler.inverse_transform([pred])[0]
 
-            tds = float(real[0])
-            turb = float(real[1])
+            tds_pred = float(inv[0])
+            turb_pred = float(inv[1])
 
-            # Rule-based water quality
-            if tds < 500:
-                q = "Safe"
-            elif tds < 1000:
-                q = "Moderate"
-            else:
-                q = "Unsafe"
+            quality = "Safe"
+            if tds_pred > 900 or turb_pred > 5:
+                quality = "Unsafe"
+            elif tds_pred > 600 or turb_pred > 3:
+                quality = "Moderate"
 
-            results.append({
-                "TDS": tds,
-                "Turbidity": turb,
-                "Quality": q
+            future_predictions.append({
+                "TDS": tds_pred,
+                "Turbidity": turb_pred,
+                "Quality": quality
             })
 
-            seq = np.array([np.vstack([seq[0][1:], pred_scaled])])
+            scaled = pred.reshape(1, 1, 2)
 
-        return jsonify({"forecast": results})
+        return jsonify(future_predictions)
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-# ============================================================
-# HEALTHCHECK
-# ============================================================
-@app.route("/healthcheck")
-def healthcheck():
-    return jsonify({"status": "OK"})
+# -------------------------------------------------------
+# 3️⃣ Get Latest IoT Reading
+# -------------------------------------------------------
+@app.route("/iot_latest", methods=["GET"])
+def get_latest():
+    return jsonify(iot_data["latest"])
 
 
-# ============================================================
-# RUN SERVER
-# ============================================================
+# -------------------------------------------------------
+# 4️⃣ Get Complete History
+# -------------------------------------------------------
+@app.route("/iot_history", methods=["GET"])
+def get_history():
+    return jsonify(iot_data["history"])
+
+
+# -------------------------------------------------------
+# 5️⃣ Save History (Flutter Dashboard "Save to History")
+# -------------------------------------------------------
+@app.route("/add_history", methods=["POST"])
+def add_history():
+    try:
+        data = request.get_json()
+
+        entry = {
+            "timestamp": time.time(),
+            "tds": float(data["tds"]),
+            "turbidity": float(data["turbidity"]),
+            "city": data.get("city", "Unknown"),
+            "latitude": data.get("latitude"),
+            "longitude": data.get("longitude"),
+        }
+
+        iot_data["history"].append(entry)
+
+        return jsonify({"status": "saved", "entry": entry})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# -------------------------------------------------------
+# 6️⃣ Search History by City
+# -------------------------------------------------------
+@app.route("/search_history", methods=["GET"])
+def search_history():
+    try:
+        city = request.args.get("city", "").lower()
+
+        results = [
+            h for h in iot_data["history"]
+            if h.get("city", "").lower() == city
+        ]
+
+        return jsonify(results)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# -------------------------------------------------------
+# Start Server
+# -------------------------------------------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=5000)
