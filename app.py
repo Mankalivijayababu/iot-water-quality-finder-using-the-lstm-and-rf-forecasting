@@ -73,7 +73,7 @@ def load_models():
     lstm_model = load_model("lstm_model.h5")
     scaler = joblib.load("scaler.pkl")
 
-    # 🔥 Prevent slow first RF prediction
+    # ⚡ Warm-up RF model (fixes slow first response)
     _ = rf_model.predict([[500, 3]])
     _ = rf_model.predict_proba([[500, 3]])
 
@@ -107,6 +107,7 @@ def warmup():
         load_models()
         return jsonify({"status": "warm", "message": "Models loaded"})
     except Exception as e:
+        print(f"[WARMUP ERROR] {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -167,7 +168,6 @@ def predict_future_quality():
         data = request.get_json()
         steps = int(data.get("steps", 7))
 
-        # Use latest IoT reading as base
         last_tds = float(iot_latest.get("tds", 500))
         last_turb = float(iot_latest.get("turbidity", 3.0))
 
@@ -183,7 +183,7 @@ def predict_future_quality():
             tds_pred = float(inv[0])
             turb_pred = float(inv[1])
 
-            # Quality Calculation
+            # Quality rules
             if tds_pred > 900 or turb_pred > 5:
                 quality = "Unsafe"
             elif tds_pred > 600 or turb_pred > 3:
