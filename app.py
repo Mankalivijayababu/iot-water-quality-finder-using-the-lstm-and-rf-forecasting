@@ -22,7 +22,6 @@ else:
 LATEST_FILE = f"{BASE_DIR}/iot_latest.json"
 HISTORY_FILE = f"{BASE_DIR}/iot_history.json"
 
-
 # =====================================================
 #  JSON HELPERS
 # =====================================================
@@ -47,7 +46,6 @@ def save_json(path, data):
     except Exception as e:
         print(f"[JSON SAVE ERROR] {path}: {e}")
 
-
 # =====================================================
 #  LAZY LOADED ML MODELS (RF + LSTM)
 # =====================================================
@@ -55,7 +53,6 @@ rf_model = None
 label_encoder = None
 lstm_model = None
 scaler = None
-
 
 def load_models():
     global rf_model, label_encoder, lstm_model, scaler
@@ -76,7 +73,6 @@ def load_models():
 
     print("✅ ML Models Loaded & Pre-Warmed")
 
-
 # =====================================================
 #  LOAD SAVED IoT DATA
 # =====================================================
@@ -94,7 +90,6 @@ iot_latest = load_json(
 
 iot_history = load_json(HISTORY_FILE, [])
 
-
 # =====================================================
 #  WARMUP ENDPOINT
 # =====================================================
@@ -105,7 +100,6 @@ def warmup():
         return jsonify({"status": "warm", "message": "Models loaded"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 # =====================================================
 #  HOME ROUTE
@@ -126,9 +120,8 @@ def home():
         }
     })
 
-
 # =====================================================
-#  RANDOM FOREST QUALITY PREDICTION
+#  RANDOM FOREST QUALITY PREDICTION (FIXED)
 # =====================================================
 @app.route("/predict", methods=["POST"])
 def predict_quality():
@@ -141,7 +134,9 @@ def predict_quality():
 
         pred_idx = rf_model.predict([[tds, turbidity]])[0]
         label = label_encoder.inverse_transform([pred_idx])[0]
-        confidence = np.max(rf_model.predict_proba([[tds, turbidity]]) * 100)
+
+        # SAFE CONFIDENCE CALCULATION
+        confidence = rf_model.predict_proba([[tds, turbidity]]).max() * 100
 
         return jsonify({
             "prediction": label,
@@ -151,7 +146,6 @@ def predict_quality():
     except Exception as e:
         print(f"[PREDICT ERROR] {e}")
         return jsonify({"error": str(e)}), 500
-
 
 # =====================================================
 #  LSTM FUTURE FORECAST (Alias: Two Routes Same Function)
@@ -201,7 +195,6 @@ def predict_future_quality():
         print(f"[LSTM ERROR] {e}")
         return jsonify({"error": str(e)}), 500
 
-
 # =====================================================
 #  GET LATEST IoT DATA
 # =====================================================
@@ -209,14 +202,12 @@ def predict_future_quality():
 def get_latest():
     return jsonify(iot_latest)
 
-
 # =====================================================
 #  GET IoT HISTORY
 # =====================================================
 @app.route("/iot_history", methods=["GET"])
 def get_history():
     return jsonify(iot_history)
-
 
 # =====================================================
 #  ADD IoT ENTRY
@@ -249,7 +240,6 @@ def add_history():
         print(f"[ADD_HISTORY ERROR] {e}")
         return jsonify({"error": str(e)}), 500
 
-
 # =====================================================
 #  SEARCH HISTORY BY CITY
 # =====================================================
@@ -263,7 +253,6 @@ def search_history():
     except Exception as e:
         print(f"[SEARCH ERROR] {e}")
         return jsonify({"error": str(e)}), 500
-
 
 # =====================================================
 #  RUN LOCAL
