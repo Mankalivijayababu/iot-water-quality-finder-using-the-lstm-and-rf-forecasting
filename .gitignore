@@ -12,9 +12,6 @@ __pycache__/
 
 
 # Machine learning models (Render doesn’t allow)
-*.h5
-*.pkl
-*.joblib
 
 # Dataset files
 *.csv
