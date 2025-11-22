@@ -131,7 +131,8 @@ model.fit(
 )
 
 # Save LSTM model (Render safe)
-model.save("lstm_model.h5", include_optimizer=False)
+model.save("lstm_model.keras")
+
 
 # Save scaler
 joblib.dump(scaler, "scaler.pkl")
