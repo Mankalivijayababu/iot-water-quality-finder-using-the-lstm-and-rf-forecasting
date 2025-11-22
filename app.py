@@ -27,7 +27,6 @@ HISTORY_FILE = f"{BASE_DIR}/iot_history.json"
 #  JSON HELPERS
 # =====================================================
 def load_json(path, default):
-    """Safely load/create JSON"""
     try:
         if not os.path.exists(path):
             with open(path, "w") as f:
@@ -42,7 +41,6 @@ def load_json(path, default):
 
 
 def save_json(path, data):
-    """Safely save JSON"""
     try:
         with open(path, "w") as f:
             json.dump(data, f, indent=4)
@@ -60,7 +58,6 @@ scaler = None
 
 
 def load_models():
-    """Load ML models only when needed"""
     global rf_model, label_encoder, lstm_model, scaler
 
     if all([rf_model, label_encoder, lstm_model, scaler]):
@@ -73,7 +70,7 @@ def load_models():
     lstm_model = load_model("lstm_model.h5")
     scaler = joblib.load("scaler.pkl")
 
-    # ⚡ Warm-up RF model (fixes slow first response)
+    # Pre-warm RF
     _ = rf_model.predict([[500, 3]])
     _ = rf_model.predict_proba([[500, 3]])
 
@@ -99,7 +96,7 @@ iot_history = load_json(HISTORY_FILE, [])
 
 
 # =====================================================
-#  WARMUP ENDPOINT (Flutter will call once)
+#  WARMUP ENDPOINT
 # =====================================================
 @app.route("/warmup", methods=["GET"])
 def warmup():
@@ -107,7 +104,6 @@ def warmup():
         load_models()
         return jsonify({"status": "warm", "message": "Models loaded"})
     except Exception as e:
-        print(f"[WARMUP ERROR] {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -121,8 +117,8 @@ def home():
         "message": "Water Quality API (RF + LSTM) is live 🚀",
         "routes": {
             "/warmup": "GET → Preload ML models",
-            "/predict": "POST → Predict quality using RF",
-            "/predict_future_quality": "POST → LSTM 7-day prediction",
+            "/predict": "POST → Predict quality using Random Forest",
+            "/predict_future or /predict_future_quality": "POST → LSTM 7-day forecast",
             "/iot_latest": "GET → Latest IoT values",
             "/iot_history": "GET → IoT history",
             "/add_history": "POST → Add new sensor entry",
@@ -158,8 +154,9 @@ def predict_quality():
 
 
 # =====================================================
-#  LSTM FUTURE FORECAST
+#  LSTM FUTURE FORECAST (Alias: Two Routes Same Function)
 # =====================================================
+@app.route("/predict_future", methods=["POST"])
 @app.route("/predict_future_quality", methods=["POST"])
 def predict_future_quality():
     try:
@@ -183,7 +180,6 @@ def predict_future_quality():
             tds_pred = float(inv[0])
             turb_pred = float(inv[1])
 
-            # Quality rules
             if tds_pred > 900 or turb_pred > 5:
                 quality = "Unsafe"
             elif tds_pred > 600 or turb_pred > 3:
