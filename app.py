@@ -3,72 +3,140 @@ from flask_cors import CORS
 import joblib
 import numpy as np
 import time
+import json
+import os
+import platform
 from tensorflow.keras.models import load_model
 
 app = Flask(__name__)
 CORS(app)
 
-# -------------------------------------------------------
-# Root Route (Homepage)
-# -------------------------------------------------------
+# =====================================================
+#  JSON FILE PATHS (Local = project folder, Render = /tmp)
+# =====================================================
+if platform.system() == "Windows":
+    BASE_DIR = "."
+else:
+    BASE_DIR = "/tmp"
+
+LATEST_FILE = f"{BASE_DIR}/iot_latest.json"
+HISTORY_FILE = f"{BASE_DIR}/iot_history.json"
+
+# =====================================================
+#  JSON HELPERS
+# =====================================================
+def load_json(path, default):
+    try:
+        if not os.path.exists(path):
+            with open(path, "w") as f:
+                json.dump(default, f, indent=4)
+            return default
+
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[JSON LOAD ERROR] {path}: {e}")
+        return default
+
+
+def save_json(path, data):
+    try:
+        with open(path, "w") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        print(f"[JSON SAVE ERROR] {path}: {e}")
+
+# =====================================================
+#  LAZY LOADED ML MODELS (RF + LSTM)
+# =====================================================
+rf_model = None
+label_encoder = None
+lstm_model = None
+scaler = None
+
+def load_models():
+    global rf_model, label_encoder, lstm_model, scaler
+
+    if all([rf_model, label_encoder, lstm_model, scaler]):
+        return
+
+    print("⚙️ Loading ML models...")
+
+    rf_model = joblib.load("rf_model.pkl")
+    label_encoder = joblib.load("label_encoder.pkl")
+    lstm_model = load_model("lstm_model.h5")
+    scaler = joblib.load("scaler.pkl")
+
+    # Pre-warm RF
+    _ = rf_model.predict([[500, 3]])
+    _ = rf_model.predict_proba([[500, 3]])
+
+    print("✅ ML Models Loaded & Pre-Warmed")
+
+# =====================================================
+#  LOAD SAVED IoT DATA
+# =====================================================
+iot_latest = load_json(
+    LATEST_FILE,
+    {
+        "timestamp": time.time(),
+        "tds": 500,
+        "turbidity": 3.0,
+        "city": "Unknown",
+        "latitude": None,
+        "longitude": None,
+    },
+)
+
+iot_history = load_json(HISTORY_FILE, [])
+
+# =====================================================
+#  WARMUP ENDPOINT
+# =====================================================
+@app.route("/warmup", methods=["GET"])
+def warmup():
+    try:
+        load_models()
+        return jsonify({"status": "warm", "message": "Models loaded"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# =====================================================
+#  HOME ROUTE
+# =====================================================
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
         "status": "running",
         "message": "Water Quality API (RF + LSTM) is live 🚀",
         "routes": {
-            "/predict": "POST → Predict water quality using Random Forest",
-            "/predict_future_quality": "POST → Predict future water quality using LSTM",
-            "/iot_latest": "GET → Latest IoT reading",
+            "/warmup": "GET → Preload ML models",
+            "/predict": "POST → Predict quality using Random Forest",
+            "/predict_future or /predict_future_quality": "POST → LSTM 7-day forecast",
+            "/iot_latest": "GET → Latest IoT values",
             "/iot_history": "GET → IoT history",
-            "/add_history": "POST → Add history entry",
-            "/search_history": "GET → Search history by city"
+            "/add_history": "POST → Add new sensor entry",
+            "/search_history": "GET → Search by city",
         }
     })
 
-
-# -------------------------------------------------------
-# Load ML Models
-# -------------------------------------------------------
-print("🔄 Loading Random Forest model...")
-rf_model = joblib.load("rf_model.pkl")
-
-print("🔄 Loading Label Encoder...")
-label_encoder = joblib.load("label_encoder.pkl")
-
-print("🔄 Loading LSTM model (.h5)...")
-lstm_model = load_model("lstm_model.h5")
-
-print("🔄 Loading LSTM scaler...")
-scaler = joblib.load("scaler.pkl")
-
-# -------------------------------------------------------
-# Dummy IoT Data (In-memory)
-# -------------------------------------------------------
-iot_data = {
-    "latest": {
-        "timestamp": time.time(),
-        "tds": 500,
-        "turbidity": 3.0
-    },
-    "history": []
-}
-
-
-# -------------------------------------------------------
-# 1️⃣ Random Forest → Predict Quality
-# -------------------------------------------------------
+# =====================================================
+#  RANDOM FOREST QUALITY PREDICTION (FIXED)
+# =====================================================
 @app.route("/predict", methods=["POST"])
 def predict_quality():
     try:
+        load_models()
+
         data = request.get_json()
         tds = float(data["tds"])
         turbidity = float(data["turbidity"])
 
-        prediction = rf_model.predict([[tds, turbidity]])[0]
-        label = label_encoder.inverse_transform([prediction])[0]
+        pred_idx = rf_model.predict([[tds, turbidity]])[0]
+        label = label_encoder.inverse_transform([pred_idx])[0]
 
-        confidence = np.max(rf_model.predict_proba([[tds, turbidity]]) * 100)
+        # SAFE CONFIDENCE CALCULATION
+        confidence = rf_model.predict_proba([[tds, turbidity]]).max() * 100
 
         return jsonify({
             "prediction": label,
@@ -76,22 +144,28 @@ def predict_quality():
         })
 
     except Exception as e:
+        print(f"[PREDICT ERROR] {e}")
         return jsonify({"error": str(e)}), 500
 
-
-# -------------------------------------------------------
-# 2️⃣ LSTM → Future Prediction
-# -------------------------------------------------------
+# =====================================================
+#  LSTM FUTURE FORECAST (Alias: Two Routes Same Function)
+# =====================================================
+@app.route("/predict_future", methods=["POST"])
 @app.route("/predict_future_quality", methods=["POST"])
 def predict_future_quality():
     try:
+        load_models()
+
         data = request.get_json()
         steps = int(data.get("steps", 7))
 
-        last_known = np.array([[500, 3]], dtype=float)
+        last_tds = float(iot_latest.get("tds", 500))
+        last_turb = float(iot_latest.get("turbidity", 3.0))
+
+        last_known = np.array([[last_tds, last_turb]], dtype=float)
         scaled = scaler.transform(last_known).reshape(1, 1, 2)
 
-        future_predictions = []
+        predictions = []
 
         for _ in range(steps):
             pred = lstm_model.predict(scaled)[0]
@@ -100,13 +174,14 @@ def predict_future_quality():
             tds_pred = float(inv[0])
             turb_pred = float(inv[1])
 
-            quality = "Safe"
             if tds_pred > 900 or turb_pred > 5:
                 quality = "Unsafe"
             elif tds_pred > 600 or turb_pred > 3:
                 quality = "Moderate"
+            else:
+                quality = "Safe"
 
-            future_predictions.append({
+            predictions.append({
                 "TDS": tds_pred,
                 "Turbidity": turb_pred,
                 "Quality": quality
@@ -114,34 +189,34 @@ def predict_future_quality():
 
             scaled = pred.reshape(1, 1, 2)
 
-        return jsonify(future_predictions)
+        return jsonify(predictions)
 
     except Exception as e:
+        print(f"[LSTM ERROR] {e}")
         return jsonify({"error": str(e)}), 500
 
-
-# -------------------------------------------------------
-# 3️⃣ Get Latest IoT Reading
-# -------------------------------------------------------
+# =====================================================
+#  GET LATEST IoT DATA
+# =====================================================
 @app.route("/iot_latest", methods=["GET"])
 def get_latest():
-    return jsonify(iot_data["latest"])
+    return jsonify(iot_latest)
 
-
-# -------------------------------------------------------
-# 4️⃣ Get Complete History
-# -------------------------------------------------------
+# =====================================================
+#  GET IoT HISTORY
+# =====================================================
 @app.route("/iot_history", methods=["GET"])
 def get_history():
-    return jsonify(iot_data["history"])
+    return jsonify(iot_history)
 
-
-# -------------------------------------------------------
-# 5️⃣ Save History Entry
-# -------------------------------------------------------
+# =====================================================
+#  ADD IoT ENTRY
+# =====================================================
 @app.route("/add_history", methods=["POST"])
 def add_history():
     try:
+        global iot_latest, iot_history
+
         data = request.get_json()
 
         entry = {
@@ -153,35 +228,34 @@ def add_history():
             "longitude": data.get("longitude"),
         }
 
-        iot_data["history"].append(entry)
+        iot_latest = entry
+        save_json(LATEST_FILE, iot_latest)
+
+        iot_history.append(entry)
+        save_json(HISTORY_FILE, iot_history)
 
         return jsonify({"status": "saved", "entry": entry})
 
     except Exception as e:
+        print(f"[ADD_HISTORY ERROR] {e}")
         return jsonify({"error": str(e)}), 500
 
-
-# -------------------------------------------------------
-# 6️⃣ Search History by City
-# -------------------------------------------------------
+# =====================================================
+#  SEARCH HISTORY BY CITY
+# =====================================================
 @app.route("/search_history", methods=["GET"])
 def search_history():
     try:
-        city = request.args.get("city", "").lower()
-
-        results = [
-            h for h in iot_data["history"]
-            if h.get("city", "").lower() == city
-        ]
-
+        city = request.args.get("city", "").lower().strip()
+        results = [h for h in iot_history if h.get("city", "").lower() == city]
         return jsonify(results)
 
     except Exception as e:
+        print(f"[SEARCH ERROR] {e}")
         return jsonify({"error": str(e)}), 500
 
-
-# -------------------------------------------------------
-# Start Server
-# -------------------------------------------------------
+# =====================================================
+#  RUN LOCAL
+# =====================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
