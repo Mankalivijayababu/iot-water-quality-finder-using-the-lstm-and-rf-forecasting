@@ -64,7 +64,7 @@ def load_models():
 
     rf_model = joblib.load("rf_model.pkl")
     label_encoder = joblib.load("label_encoder.pkl")
-    lstm_model = load_model("lstm_model.h5")
+    lstm_model = load_model("lstm_model.keras")
     scaler = joblib.load("scaler.pkl")
 
     # Pre-warm RF
