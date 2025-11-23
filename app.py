@@ -191,19 +191,28 @@ def predict_future_quality():
     try:
         load_models()
 
-        data = request.get_json(force=True)
+        data = request.get_json()
         steps = int(data.get("steps", 7))
 
-        last_tds = float(iot_latest.get("tds", 500.0))
-        last_turb = float(iot_latest.get("turbidity", 3.0))
+        # Build 14-timestep history from local memory
+        # If history has less than 14 values, pad with last known
+        history = []
 
-        last_known = np.array([[last_tds, last_turb]], dtype=float)
-        scaled = scaler.transform(last_known).reshape(1, 1, 2)
+        for h in reversed(iot_history[-14:]):
+            history.append([float(h["tds"]), float(h["turbidity"])])
+
+        # If less than 14 values exist, pad it
+        while len(history) < 14:
+            history.insert(0, history[0])  # pad with oldest
+
+        history = np.array(history, dtype=float)
+
+        scaled_seq = scaler.transform(history).reshape(1, 14, 2)
 
         predictions = []
 
         for _ in range(steps):
-            pred = lstm_model.predict(scaled, verbose=0)[0]
+            pred = lstm_model.predict(scaled_seq)[0]
             inv = scaler.inverse_transform([pred])[0]
 
             tds_pred = float(inv[0])
@@ -216,16 +225,15 @@ def predict_future_quality():
             else:
                 quality = "Safe"
 
-            predictions.append(
-                {
-                    "TDS": tds_pred,
-                    "Turbidity": turb_pred,
-                    "Quality": quality,
-                }
-            )
+            predictions.append({
+                "TDS": tds_pred,
+                "Turbidity": turb_pred,
+                "Quality": quality
+            })
 
-            # Feed prediction as next input
-            scaled = pred.reshape(1, 1, 2)
+            # Update sequence window
+            scaled_seq = np.roll(scaled_seq, -1, axis=1)
+            scaled_seq[0, -1, :] = scaler.transform([[tds_pred, turb_pred]])[0]
 
         return jsonify(predictions)
 
